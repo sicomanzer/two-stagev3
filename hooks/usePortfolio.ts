@@ -26,6 +26,14 @@ export function usePortfolio(setIsLoadingData: (loading: boolean) => void) {
   const fetchPortfolios = async () => {
     try {
       const res = await fetch('/api/portfolios');
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`Failed to fetch portfolios: ${res.status} ${res.statusText}`, errorText);
+        // Handle non-JSON error response gracefully
+        return; 
+      }
+
       const data = await res.json();
       setPortfolios(data);
       if (data.length > 0 && !currentPortfolioId) {

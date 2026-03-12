@@ -1069,7 +1069,7 @@ TTW`);
 
                     {result && ticker && (
                       <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 delay-500">
-                        <PeerComparison mainTicker={ticker} />
+                        <PeerComparison mainTicker={ticker} mainScorecard={scorecard} />
                       </div>
                     )}
                   </div>

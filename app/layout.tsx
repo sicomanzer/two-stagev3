@@ -2,13 +2,13 @@ import type {Metadata} from 'next';
 import './globals.css'; // Global styles
 
 export const metadata: Metadata = {
-  title: 'VI Stock Analyzer — Two-Stage DDM Calculator',
-  description: 'เครื่องมือวิเคราะห์หุ้นสำหรับนักลงทุน Value Investing — DDM, Graham Number, Stock Scorecard, PE/PBV Band, Trend Analysis',
+  title: 'VI Stock Analyzer | วิเคราะห์หุ้นแบบ Value Investing',
+  description: 'ระบบวิเคราะห์หุ้นไทยด้วย Two-Stage DDM, Graham Number, Scorecard, PE/PBV Band และแนวโน้มผลประกอบการ',
 };
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="th" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: `
           (function() {

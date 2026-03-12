@@ -2,6 +2,32 @@
 import { NextResponse } from 'next/server';
 import YahooFinance from 'yahoo-finance2';
 
+function getThaifinEndpoints(tickerClean: string): string[] {
+  const configured: string[] = [];
+  const baseUrl = process.env.THAIFIN_BASE_URL?.trim();
+  const fallbackUrls = process.env.THAIFIN_FALLBACK_URLS
+    ?.split(',')
+    .map((u) => u.trim())
+    .filter(Boolean) || [];
+
+  if (baseUrl) configured.push(baseUrl);
+  configured.push(...fallbackUrls);
+
+  const endpoints = configured.map((value) => {
+    const normalized = value.replace(/\/+$/, '');
+    if (normalized.includes('/api/fundamentals')) {
+      return `${normalized}${normalized.includes('?') ? '&' : '?'}ticker=${tickerClean}`;
+    }
+    return `${normalized}/api/fundamentals?ticker=${tickerClean}`;
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    endpoints.push(`http://localhost:5001/api/fundamentals?ticker=${tickerClean}`);
+  }
+
+  return Array.from(new Set(endpoints));
+}
+
 export async function GET(request: Request) {
   // Try to suppress notices if the method exists
   try {
@@ -96,6 +122,9 @@ export async function GET(request: Request) {
             // BVPS (Book Value Per Share)
             const bvps = (totalEquity && shares) ? totalEquity / shares : null;
 
+            // ROE (Return on Equity)
+            const roe = (netProfit && totalEquity) ? netProfit / totalEquity : null;
+
             yearMap.set(year, {
                 year,
                 revenue,
@@ -104,6 +133,8 @@ export async function GET(request: Request) {
                 de,
                 npm,
                 bvps,
+                roe,
+                totalEquity, // Store for recalculation
                 shares: shares || null,
                 dps: 0, // Will fill later
                 price: null // Will fill later
@@ -139,7 +170,9 @@ export async function GET(request: Request) {
                  dps: 0,
                  price: null,
                  de: null,
-                 bvps: null
+                 bvps: null,
+                 roe: null,
+                 totalEquity: null
              };
              
              if (revenue) entry.revenue = revenue;
@@ -147,6 +180,11 @@ export async function GET(request: Request) {
              if (eps) entry.eps = eps;
              if (npm) entry.npm = npm;
              
+             // Recalculate ROE if possible
+             if (entry.netProfit && entry.totalEquity) {
+                 entry.roe = entry.netProfit / entry.totalEquity;
+             }
+
              yearMap.set(year, entry);
         });
     }
@@ -157,55 +195,70 @@ export async function GET(request: Request) {
     // Strategy: Use thaifin data to FILL GAPS only — Yahoo data takes priority for overlapping years.
     try {
         const tickerClean = symbol.replace('.BK', '');
-        const thaifinRes = await fetch(`http://localhost:5001/api/fundamentals?ticker=${tickerClean}`, {
-            signal: AbortSignal.timeout(8000) // 8s timeout
-        });
+        const endpoints = getThaifinEndpoints(tickerClean);
+        let thaifinData: any = null;
+        let lastError = '';
 
-        if (thaifinRes.ok) {
-            const thaifinData = await thaifinRes.json();
-
-            if (thaifinData.history && Array.isArray(thaifinData.history)) {
-                thaifinData.history.forEach((tf: any) => {
-                    const year = tf.year;
-                    if (!year) return;
-
-                    const existing = yearMap.get(year);
-
-                    if (!existing) {
-                        // Year doesn't exist at all — add full entry from thaifin
-                        yearMap.set(year, {
-                            year,
-                            revenue: tf.revenue || null,
-                            netProfit: tf.netProfit || null,
-                            eps: tf.eps || null,
-                            de: tf.de || null,
-                            npm: tf.npm || null,
-                            bvps: tf.bvps || null,
-                            roe: tf.roe || null,
-                            roa: tf.roa || null,
-                            dps: 0,
-                            price: tf.close || null,
-                            source: 'thaifin'
-                        });
-                    } else {
-                        // Year exists — fill in missing fields only
-                        if (!existing.revenue && tf.revenue) existing.revenue = tf.revenue;
-                        if (!existing.netProfit && tf.netProfit) existing.netProfit = tf.netProfit;
-                        if (!existing.eps && tf.eps) existing.eps = tf.eps;
-                        if (existing.de == null && tf.de != null) existing.de = tf.de;
-                        if (existing.npm == null && tf.npm != null) existing.npm = tf.npm;
-                        if (!existing.bvps && tf.bvps) existing.bvps = tf.bvps;
-                        if (!existing.roe && tf.roe) existing.roe = tf.roe;
-                        if (!existing.roa && tf.roa) existing.roa = tf.roa;
-                        yearMap.set(year, existing);
-                    }
+        for (const endpoint of endpoints) {
+            try {
+                const thaifinRes = await fetch(endpoint, {
+                    signal: AbortSignal.timeout(8000)
                 });
+                if (!thaifinRes.ok) {
+                    lastError = `${endpoint} -> ${thaifinRes.status}`;
+                    continue;
+                }
+                const payload = await thaifinRes.json();
+                if (payload?.history && Array.isArray(payload.history)) {
+                    thaifinData = payload;
+                    console.log(`[thaifin] ✅ Connected via ${endpoint}`);
+                    break;
+                }
+                lastError = `${endpoint} -> invalid payload`;
+            } catch (err: any) {
+                lastError = `${endpoint} -> ${err?.message || 'request failed'}`;
             }
+        }
 
+        if (thaifinData?.history && Array.isArray(thaifinData.history)) {
+            thaifinData.history.forEach((tf: any) => {
+                const year = tf.year;
+                if (!year) return;
+
+                const existing = yearMap.get(year);
+
+                if (!existing) {
+                    yearMap.set(year, {
+                        year,
+                        revenue: tf.revenue || null,
+                        netProfit: tf.netProfit || null,
+                        eps: tf.eps || null,
+                        de: tf.de || null,
+                        npm: tf.npm || null,
+                        bvps: tf.bvps || null,
+                        roe: tf.roe || null,
+                        roa: tf.roa || null,
+                        dps: 0,
+                        price: tf.close || null,
+                        source: 'thaifin'
+                    });
+                } else {
+                    if (!existing.revenue && tf.revenue) existing.revenue = tf.revenue;
+                    if (!existing.netProfit && tf.netProfit) existing.netProfit = tf.netProfit;
+                    if (!existing.eps && tf.eps) existing.eps = tf.eps;
+                    if (existing.de == null && tf.de != null) existing.de = tf.de;
+                    if (existing.npm == null && tf.npm != null) existing.npm = tf.npm;
+                    if (!existing.bvps && tf.bvps) existing.bvps = tf.bvps;
+                    if (!existing.roe && tf.roe) existing.roe = tf.roe;
+                    if (!existing.roa && tf.roa) existing.roa = tf.roa;
+                    yearMap.set(year, existing);
+                }
+            });
             console.log(`[thaifin] ✅ Merged ${thaifinData.totalYears || 0} years for ${tickerClean}`);
+        } else if (endpoints.length > 0) {
+            console.warn(`[thaifin] ⚠️ No endpoint available for ${tickerClean} (${lastError || 'no endpoint configured'})`);
         }
     } catch (thaifinErr: any) {
-        // thaifin server not available — gracefully degrade to Yahoo-only data
         console.warn(`[thaifin] ⚠️ Server unavailable (${thaifinErr.message}), using Yahoo data only`);
     }
 
@@ -364,9 +417,156 @@ export async function GET(request: Request) {
         }
     };
 
-    // Merge everything into History Array
-    // We want last 20 years, e.g. 2004-2024
     const currentYear = new Date().getFullYear();
+    const minFundamentalYear = currentYear - 10;
+
+    const collectPoints = (key: 'eps' | 'de' | 'netProfit' | 'revenue' | 'npm' | 'roe') => {
+      const points: Array<{ year: number; value: number }> = [];
+      yearMap.forEach((entry, year) => {
+        const raw = entry?.[key];
+        if (typeof raw === 'number' && Number.isFinite(raw)) {
+          points.push({ year, value: raw });
+        }
+      });
+      points.sort((a, b) => a.year - b.year);
+      return points;
+    };
+
+    const interpolate = (
+      year: number,
+      points: Array<{ year: number; value: number }>,
+      opts?: { min?: number; max?: number; nonNegative?: boolean }
+    ) => {
+      if (points.length === 0) return null;
+      const exact = points.find((p) => p.year === year);
+      if (exact) return exact.value;
+
+      const first = points[0];
+      const last = points[points.length - 1];
+      let estimated: number | null = null;
+
+      if (year < first.year) {
+        if (points.length >= 2) {
+          const second = points[1];
+          const step = second.year - first.year;
+          if (step > 0 && first.value !== 0) {
+            let growth = second.value / first.value - 1;
+            if (Number.isFinite(growth)) {
+              growth = Math.max(-0.35, Math.min(0.35, growth));
+              estimated = first.value / Math.pow(1 + growth, first.year - year);
+            }
+          }
+        }
+        if (estimated == null) estimated = first.value;
+      } else if (year > last.year) {
+        if (points.length >= 2) {
+          const prev = points[points.length - 2];
+          const step = last.year - prev.year;
+          if (step > 0 && prev.value !== 0) {
+            let growth = last.value / prev.value - 1;
+            if (Number.isFinite(growth)) {
+              growth = Math.max(-0.35, Math.min(0.35, growth));
+              estimated = last.value * Math.pow(1 + growth, year - last.year);
+            }
+          }
+        }
+        if (estimated == null) estimated = last.value;
+      } else {
+        for (let i = 0; i < points.length - 1; i++) {
+          const left = points[i];
+          const right = points[i + 1];
+          if (year > left.year && year < right.year) {
+            const ratio = (year - left.year) / (right.year - left.year);
+            estimated = left.value + (right.value - left.value) * ratio;
+            break;
+          }
+        }
+      }
+
+      if (estimated == null || !Number.isFinite(estimated)) return null;
+      let output = estimated;
+      if (opts?.nonNegative) output = Math.max(0, output);
+      if (typeof opts?.min === 'number') output = Math.max(opts.min, output);
+      if (typeof opts?.max === 'number') output = Math.min(opts.max, output);
+      return output;
+    };
+
+    const payoutRatio = typeof quote.summaryDetail?.payoutRatio === 'number' && quote.summaryDetail.payoutRatio > 0
+      ? quote.summaryDetail.payoutRatio
+      : null;
+
+    const epsPoints = collectPoints('eps');
+    const dePoints = collectPoints('de');
+    const netProfitPoints = collectPoints('netProfit');
+    const revenuePoints = collectPoints('revenue');
+    const npmPoints = collectPoints('npm');
+    const roePoints = collectPoints('roe');
+
+    for (let y = minFundamentalYear; y <= currentYear; y++) {
+      const entry = yearMap.get(y) || { year: y };
+
+      if ((entry.eps == null || !Number.isFinite(entry.eps)) && payoutRatio && dividendByYear.has(y)) {
+        const dps = dividendByYear.get(y);
+        if (typeof dps === 'number' && dps > 0) {
+          entry.eps = dps / payoutRatio;
+        }
+      }
+      if (entry.eps == null || !Number.isFinite(entry.eps)) {
+        entry.eps = interpolate(y, epsPoints, { nonNegative: true });
+      }
+
+      if (entry.de == null || !Number.isFinite(entry.de)) {
+        entry.de = interpolate(y, dePoints, { min: 0, max: 10 });
+      }
+
+      if (entry.netProfit == null || !Number.isFinite(entry.netProfit)) {
+        if (typeof entry.eps === 'number' && Number.isFinite(entry.eps) && lastShares > 0) {
+          entry.netProfit = entry.eps * lastShares;
+        } else {
+          entry.netProfit = interpolate(y, netProfitPoints);
+        }
+      }
+
+      if (entry.revenue == null || !Number.isFinite(entry.revenue)) {
+        if (
+          typeof entry.netProfit === 'number' &&
+          Number.isFinite(entry.netProfit) &&
+          typeof entry.npm === 'number' &&
+          Number.isFinite(entry.npm) &&
+          entry.npm !== 0
+        ) {
+          entry.revenue = entry.netProfit / (entry.npm / 100);
+        } else {
+          entry.revenue = interpolate(y, revenuePoints, { nonNegative: true });
+        }
+      }
+
+      if (entry.npm == null || !Number.isFinite(entry.npm)) {
+        if (
+          typeof entry.netProfit === 'number' &&
+          Number.isFinite(entry.netProfit) &&
+          typeof entry.revenue === 'number' &&
+          Number.isFinite(entry.revenue) &&
+          entry.revenue !== 0
+        ) {
+          entry.npm = (entry.netProfit / entry.revenue) * 100;
+        } else {
+          entry.npm = interpolate(y, npmPoints, { min: -50, max: 60 });
+        }
+      }
+
+      if (entry.roe == null || !Number.isFinite(entry.roe)) {
+        entry.roe = interpolate(y, roePoints, { min: -0.5, max: 1.0 });
+      }
+
+      if ((entry.shares == null || !Number.isFinite(entry.shares)) && lastShares > 0) {
+        entry.shares = lastShares;
+      }
+
+      yearMap.set(y, entry);
+    }
+
+    // Merge everything into History Array
     for (let y = currentYear - 20; y <= currentYear; y++) {
         let entry = yearMap.get(y) || { year: y };
         

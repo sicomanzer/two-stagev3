@@ -7,3 +7,6 @@ coverage/
 !.env.example
 portfolio.db
 portfolio.db-journal
+__pycache__/
+*.pyc
+two-stage.rar

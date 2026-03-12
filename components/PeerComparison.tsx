@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { calculateScorecard } from '@/lib/calculations';
 import type { StockScorecard } from '@/types/stock';
 
@@ -30,7 +30,13 @@ const PRESET_SECTORS: Record<string, string[]> = {
   'MATERIALS': ['SCC', 'SCCC', 'TPIPL', 'TASCO', 'DCC'],
   
   // AGRI & FOOD
-  'FOOD': ['TU', 'CPF', 'CBG', 'OSP', 'ICHI', 'SAPPE', 'TACC', 'HTC', 'SORKON', 'RBF', 'NSL'],
+  'FOOD': [
+    'TU', 'CPF', 'GFPT', 'TFG', // Meat & Processed
+    'CBG', 'OSP', 'ICHI', 'SAPPE', 'HTC', 'TACC', // Beverage
+    'NSL', 'PB', 'TKN', 'SNNP', 'PM', 'SNP', // Snack & Bakery (Direct Peers for NSL)
+    'SORKON', 'RBF', 'LST', 'APURE' // Ingredients & Others
+  ],
+  'RESTAURANT': ['M', 'AU', 'ZEN', 'MAGURO', 'SNP'],
   'AGRI': ['STA', 'NER', 'GFPT', 'TWPC']
 };
 
@@ -61,37 +67,18 @@ interface PeerData {
 
 interface PeerComparisonProps {
   mainTicker: string;
+  mainScorecard?: StockScorecard | null;
 }
 
-export default function PeerComparison({ mainTicker }: PeerComparisonProps) {
+export default function PeerComparison({ mainTicker, mainScorecard = null }: PeerComparisonProps) {
   const [sector, setSector] = useState<string | null>(getSectorForTicker(mainTicker));
   const [customPeers, setCustomPeers] = useState<string>('');
   const [peersData, setPeersData] = useState<PeerData[]>([]);
   const [isFetching, setIsFetching] = useState(false);
 
   // Initialize peer list
-  useEffect(() => {
-    const currentSector = getSectorForTicker(mainTicker);
-    setSector(currentSector);
-    
-    let peersToFetch: string[] = [];
-    if (currentSector) {
-      peersToFetch = [...PRESET_SECTORS[currentSector]];
-      // ensure main ticker is in the list
-      if (!peersToFetch.includes(mainTicker.toUpperCase())) {
-         peersToFetch.unshift(mainTicker.toUpperCase());
-      }
-    } else {
-      peersToFetch = [mainTicker.toUpperCase()];
-    }
-
-    setCustomPeers(peersToFetch.join(', '));
-    fetchPeersData(peersToFetch);
-  }, [mainTicker]);
-
-  const fetchPeersData = async (tickers: string[]) => {
+  const fetchPeersData = useCallback(async (tickers: string[]) => {
     setIsFetching(true);
-    // Setup initial state
     const initialData: PeerData[] = tickers.map(t => ({
       ticker: t,
       price: null, pe: null, pbv: null, roe: null, de: null, yield: null,
@@ -99,7 +86,6 @@ export default function PeerComparison({ mainTicker }: PeerComparisonProps) {
     }));
     setPeersData(initialData);
 
-    // Fetch parallelly
     const fetchPromises = tickers.map(async (ticker) => {
       try {
         const res = await fetch(`/api/stock?ticker=${ticker}`);
@@ -107,27 +93,22 @@ export default function PeerComparison({ mainTicker }: PeerComparisonProps) {
         
         if (!res.ok) throw new Error(data.error || 'Failed');
         
-        // Calculate Score if possible
         let score = null;
         let sc: StockScorecard | null = null;
         if (data.history && data.history.length > 0) {
-            // Very simplified scorecard generation just to get a score
-            // In reality, we need full data, but we can do our best.
             try {
-                // Mock historical data structure for calculateScorecard
                 sc = calculateScorecard(
                     ticker,
                     data.history,
                     data.currentPrice || null,
-                    null, // fairPrice is omitted to keep simple
+                    null,
                     data.pe || null,
                     data.pbv || null,
-                    data.ratioBands?.pe?.avg || null,
-                    data.ratioBands?.pbv?.avg || null
+                    data.ratioBands?.pe?.stats?.avg || null,
+                    data.ratioBands?.pbv?.stats?.avg || null
                 );
                 score = sc.totalScore;
             } catch (e) {
-                // Ignore score calc error
             }
         }
 
@@ -156,9 +137,46 @@ export default function PeerComparison({ mainTicker }: PeerComparisonProps) {
     });
 
     const results = await Promise.all(fetchPromises);
-    setPeersData(results);
+    const main = mainTicker.toUpperCase();
+    const normalized = results.map(peer =>
+      mainScorecard && peer.ticker === main
+        ? { ...peer, score: mainScorecard.totalScore, scorecard: mainScorecard }
+        : peer
+    );
+    setPeersData(normalized);
     setIsFetching(false);
-  };
+  }, [mainScorecard, mainTicker]);
+
+  useEffect(() => {
+    const currentSector = getSectorForTicker(mainTicker);
+    setSector(currentSector);
+    
+    let peersToFetch: string[] = [];
+    if (currentSector) {
+      peersToFetch = [...PRESET_SECTORS[currentSector]];
+      // ensure main ticker is in the list
+      if (!peersToFetch.includes(mainTicker.toUpperCase())) {
+         peersToFetch.unshift(mainTicker.toUpperCase());
+      }
+    } else {
+      peersToFetch = [mainTicker.toUpperCase()];
+    }
+
+    setCustomPeers(peersToFetch.join(', '));
+    fetchPeersData(peersToFetch);
+  }, [mainTicker, fetchPeersData]);
+
+  useEffect(() => {
+    if (!mainScorecard) return;
+    const main = mainTicker.toUpperCase();
+    setPeersData(prev =>
+      prev.map(peer =>
+        peer.ticker === main
+          ? { ...peer, score: mainScorecard.totalScore, scorecard: mainScorecard }
+          : peer
+      )
+    );
+  }, [mainScorecard, mainTicker]);
 
   const handleCustomPeersSubmit = (e: React.FormEvent) => {
      e.preventDefault();

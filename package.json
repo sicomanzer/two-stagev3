@@ -14,7 +14,6 @@
     "@hookform/resolvers": "^5.2.1",
     "@supabase/supabase-js": "^2.98.0",
     "autoprefixer": "^10.4.21",
-    "better-sqlite3": "^12.6.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.553.0",
@@ -30,7 +29,6 @@
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.11",
     "@tailwindcss/typography": "^0.5.19",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
