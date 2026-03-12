@@ -10,11 +10,24 @@ function getThaifinEndpoints(tickerClean: string): string[] {
     .map((u) => u.trim())
     .filter(Boolean) || [];
 
-  if (baseUrl) configured.push(baseUrl);
+  if (baseUrl) {
+    let url = baseUrl;
+    // Handle host-only values from Render (e.g. "two-stage-backend-xxxx.onrender.com")
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = `https://${url}`;
+    }
+    configured.push(url);
+  }
   configured.push(...fallbackUrls);
 
   const endpoints = configured.map((value) => {
-    const normalized = value.replace(/\/+$/, '');
+    let normalized = value.replace(/\/+$/, '');
+    
+    // Ensure protocol for fallback URLs too
+    if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+        normalized = `https://${normalized}`;
+    }
+
     if (normalized.includes('/api/fundamentals')) {
       return `${normalized}${normalized.includes('?') ? '&' : '?'}ticker=${tickerClean}`;
     }
