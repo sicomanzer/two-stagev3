@@ -1,0 +1,5 @@
+{
+  "name": "Two-Stage DDM Calculator",
+  "description": "ประเมินมูลค่าหุ้นด้วยวิธี Two-Stage Dividend Discount Model (สไตล์ อ.กวี)",
+  "requestFramePermissions": []
+}
